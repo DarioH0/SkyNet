@@ -2,13 +2,48 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"mime/multipart"
 	"net"
+	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
+
+/* ANON FILES API STRUCTS */
+type APIResponse struct {
+	Status bool `json:"status"`
+	Data   struct {
+		File struct {
+			URL struct {
+				Full  string `json:"full"`
+				Short string `json:"short"`
+			} `json:"url"`
+			Metadata struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+				Size struct {
+					Bytes    int    `json:"bytes"`
+					Readable string `json:"readable"`
+				} `json:"size"`
+			} `json:"metadata"`
+		} `json:"file"`
+	} `json:"data"`
+	Error *APIError `json:"error"`
+}
+
+type APIError struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Code    int    `json:"code"`
+}
+
 
 func main() {
 	fmt.Println("\033[1;32mWelcome to the SkyNet Terminal!\033[0m")
@@ -41,6 +76,12 @@ func main() {
 				printHelp()
 			} else {
 				printCommandHelp(args[1])
+			}
+		case "hostfile":
+			if len(args) > 1 {
+				hostFile(args[1])
+			} else {
+				fmt.Println("\033[1;31mCommand > hostfile: Please provide a file name.\033[0m")
 			}
 		case "exit":
 			fmt.Println("\033[1;32mGoodbye!\033[0m")
@@ -89,6 +130,7 @@ func printHelp() {
 	fmt.Println("- ls\t\t\tDisplays a list of files/folders inside the current working directory.")
 	fmt.Println("- self\t\t\tDisplays information about your IP Address and Operating System.")
 	fmt.Println("- clear / cls\t\tClears the screen from previous commands.")
+	fmt.Println("- hostfile <file>\tHosts the given file from the current directory on Anonfiles and retrieves the link.")
 	fmt.Println("- exit\t\t\tExits the terminal.")
 }
 
@@ -100,9 +142,10 @@ func printCommandHelp(command string) {
 		"echo":    "The 'echo' command is used to print custom messages. \nTakes (1) argument, 'message' \n\nExample: \n>>> echo This is an example \n\nReturns: \nThis is an example",
 		"exit":    "The 'exit' command is used to exit the terminal. \nTakes no additional arguments.",
 		"help":    "The 'help' command is used to display a list of all commands and their descriptions. \nTakes (1) argument, optional: 'command' \n\nExample: \n>>> help help \n\nReturns: \nThe 'help' command is used to displ...",
-		"ping":    "The 'ping' command is used to ping a specified host. \nTakes (1) argument, 'host' \n\nExample: \n>>> ping example.com \n\nReturns: \nPinging example.com ...\n",
+		"ping":    "The 'ping' command is used to ping a specified host. \nTakes (1) argument, 'host' \n\nExample: \n>>> ping example.com \n\nReturns: \nPinging example.com ...",
 		"cd":      "The 'cd' command is used to change or display the current working directory. \nTakes (1) argument, optional: 'directory' \n\nExample: \n>>> cd Desktop/ \n>>> cd \n\nReturns: Desktop/",
 		"ls":      "The 'ls' command is used to display a list of files/folders that are inside the current working directory. \nTakes no additional arguments.",
+		"hostfile": "The 'hostfile' command is used to host the given file from the current directory on Anonfiles and retrieves the link. \nTakes (1) argument, 'file' \n\nExample: \n>>> hostfile myfile.txt",
 	}
 
 	if helpMessage, ok := helpMessages[command]; ok {
@@ -143,3 +186,69 @@ func ls() {
 		}
 	}
 }
+
+func hostFile(fileName string) {
+	file, err := os.Open(fileName)
+	if err != nil {
+		fmt.Printf("\033[1;31mCommand > hostfile: Failed to open file '%s'. Error: %s\033[0m\n", fileName, err.Error())
+		return
+	}
+	defer file.Close()
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", filepath.Base(fileName))
+	if err != nil {
+		fmt.Printf("\033[1;31mCommand > hostfile: Failed to create form file. Error: %s\033[0m\n", err.Error())
+		return
+	}
+
+	_, err = io.Copy(part, file)
+	if err != nil {
+		fmt.Printf("\033[1;31mCommand > hostfile: Failed to copy file data. Error: %s\033[0m\n", err.Error())
+		return
+	}
+
+	err = writer.Close()
+	if err != nil {
+		fmt.Printf("\033[1;31mCommand > hostfile: Failed to close multipart writer. Error: %s\033[0m\n", err.Error())
+		return
+	}
+
+	req, err := http.NewRequest("POST", "https://api.anonfiles.com/upload", body)
+	if err != nil {
+		fmt.Printf("\033[1;31mCommand > hostfile: Failed to create request. Error: %s\033[0m\n", err.Error())
+		return
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Printf("\033[1;31mCommand > hostfile: Failed to upload file. Error: %s\033[0m\n", err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Printf("\033[1;31mCommand > hostfile: Failed to read response body. Error: %s\033[0m\n", err.Error())
+		return
+	}
+
+	var responseData APIResponse
+	err = json.Unmarshal(responseBody, &responseData)
+	if err != nil {
+		fmt.Printf("\033[1;31mCommand > hostfile: Failed to parse response body. Error: %s\033[0m\n", err.Error())
+		return
+	}
+
+	if responseData.Status {
+		fmt.Println("File uploaded.")
+		fmt.Printf("URL: %s\n", responseData.Data.File.URL.Full)
+	} else {
+		fmt.Printf("\033[1;31mCommand > hostfile: Failed to host file. Error: %s\033[0m\n", responseData.Error.Message)
+	}
+}
+
+
+
